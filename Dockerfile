@@ -78,62 +78,48 @@ RUN set -ex; \
 # see note below about "*.pyc" files
 	export PYTHONDONTWRITEBYTECODE=1; \
 	\
-	dpkgArch="$(dpkg --print-architecture)"; \
-	case "$dpkgArch" in \
-		amd64|i386|ppc64el) \
-# arches officialy built by upstream
-			echo "deb http://apt.postgresql.org/pub/repos/apt/ stretch-pgdg main $PG_MAJOR" > /etc/apt/sources.list.d/pgdg.list; \
-			apt-get update; \
-			;; \
-		*) \
-# we're on an architecture upstream doesn't officially build for
-# let's build binaries from their published source packages
-			echo "deb-src http://apt.postgresql.org/pub/repos/apt/ stretch-pgdg main $PG_MAJOR" > /etc/apt/sources.list.d/pgdg.list; \
-			\
-			case "$PG_MAJOR" in \
-				9.* | 10 ) ;; \
-				*) \
-# https://github.com/docker-library/postgres/issues/484 (clang-6.0 required, only available in stretch-backports)
-# TODO remove this once we hit buster+
-					echo 'deb http://deb.debian.org/debian stretch-backports main' >> /etc/apt/sources.list.d/pgdg.list; \
-					;; \
-			esac; \
-			\
-			tempDir="$(mktemp -d)"; \
-			cd "$tempDir"; \
-			\
-			savedAptMark="$(apt-mark showmanual)"; \
-			\
+	echo "deb http://apt.postgresql.org/pub/repos/apt/ stretch-pgdg main $PG_MAJOR" > /etc/apt/sources.list.d/pgdg.list; \
+	echo "deb-src http://apt.postgresql.org/pub/repos/apt/ stretch-pgdg main $PG_MAJOR" > /etc/apt/sources.list.d/pgdg.list; \
+	echo 'deb http://deb.debian.org/debian stretch-backports main' >> /etc/apt/sources.list.d/pgdg.list; \
+	\
+	tempDir="$(mktemp -d)"; \
+	cd "$tempDir"; \
+	\
+	savedAptMark="$(apt-mark showmanual)"; \
+	\
 # build .deb files from upstream's source packages (which are verified by apt-get)
-			apt-get update; \
-			apt-get build-dep -y \
-				postgresql-common pgdg-keyring \
-				"postgresql-$PG_MAJOR=$PG_VERSION" \
-			; \
-			DEB_BUILD_OPTIONS="nocheck parallel=$(nproc)" \
-				apt-get source --compile \
-					postgresql-common pgdg-keyring \
-					"postgresql-$PG_MAJOR=$PG_VERSION" \
-			; \
+	apt-get update; \
+	apt-get build-dep -y \
+		postgresql-common pgdg-keyring \
+		"postgresql-$PG_MAJOR=$PG_VERSION" \
+	; \
+	apt-get source --compile postgresql-common pgdg-keyring; \
+	apt-get install -y curl; \
+	apt-get source "postgresql-$PG_MAJOR=$PG_VERSION"; \
+	curl -o postgresql-11-11.1/debian/patches/matviewtriggers-v3.patch https://www.postgresql.org/message-id/attachment/95772/matviewtriggers-v3.patch; \
+	curl -o postgresql-11-11.1/debian/patches/tempmatviews-v4.patch https://www.postgresql.org/message-id/attachment/95771/tempmatviews-v4.patch; \
+	echo "matviewtriggers-v3.patch" >> postgresql-11-11.1/debian/patches/series; \
+	echo "tempmatviews-v4.patch" >> postgresql-11-11.1/debian/patches/series; \
+	cd postgresql-11-11.1; \
+	DEB_BUILD_OPTIONS="nocheck parallel=$(nproc)" dpkg-buildpackage --no-sign; \
+	cd ..; \
 # we don't remove APT lists here because they get re-downloaded and removed later
-			\
+	\
 # reset apt-mark's "manual" list so that "purge --auto-remove" will remove all build dependencies
 # (which is done after we install the built packages so we don't have to redownload any overlapping dependencies)
-			apt-mark showmanual | xargs apt-mark auto > /dev/null; \
-			apt-mark manual $savedAptMark; \
-			\
+	apt-mark showmanual | xargs apt-mark auto > /dev/null; \
+	apt-mark manual $savedAptMark; \
+	\
 # create a temporary local APT repo to install from (so that dependency resolution can be handled by APT, as it should be)
-			ls -lAFh; \
-			dpkg-scanpackages . > Packages; \
-			grep '^Package: ' Packages; \
-			echo "deb [ trusted=yes ] file://$tempDir ./" > /etc/apt/sources.list.d/temp.list; \
+	ls -lAFh; \
+	dpkg-scanpackages . > Packages; \
+	grep '^Package: ' Packages; \
+	echo "deb [ trusted=yes ] file://$tempDir ./" > /etc/apt/sources.list.d/temp.list; \
 # work around the following APT issue by using "Acquire::GzipIndexes=false" (overriding "/etc/apt/apt.conf.d/docker-gzip-indexes")
 #   Could not open file /var/lib/apt/lists/partial/_tmp_tmp.ODWljpQfkE_._Packages - open (13: Permission denied)
 #   ...
 #   E: Failed to fetch store:/var/lib/apt/lists/partial/_tmp_tmp.ODWljpQfkE_._Packages  Could not open file /var/lib/apt/lists/partial/_tmp_tmp.ODWljpQfkE_._Packages - open (13: Permission denied)
-			apt-get -o Acquire::GzipIndexes=false update; \
-			;; \
-	esac; \
+	apt-get -o Acquire::GzipIndexes=false update; \
 	\
 	apt-get install -y postgresql-common; \
 	sed -ri 's/#(create_main_cluster) .*$/\1 = false/' /etc/postgresql-common/createcluster.conf; \
